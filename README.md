@@ -89,7 +89,7 @@ int threadpool_destroy(threadpool_t *pool, int flags);
 - `pool`: 线程池指针
 - `flags`: 销毁模式
   - `THREADPOOL_GRACEFUL`: 等待所有任务完成后销毁
-  - `THREADPOOL_IMMEDIATE`: 立即销毁，取消队列中的任务
+  - `THREADPOOL_IMMEDIATE`: 立即销毁，取消队列中的任务,可能存在条件竞争导致内存泄漏的风险,现已关闭该功能.
 
 **返回值**:
 

@@ -244,9 +244,10 @@ int threadpool_destroy(threadpool_t *pool, int flags)
             
             // 如果是立即模式，直接释放任务
             // 如果是优雅模式，任务已在线程结束前处理完
-            if (flags & THREADPOOL_IMMEDIATE) {
-                free(task);
-            }
+            // 可能存在条件竞争导致内存泄漏的风险,现已关闭该功能.
+            // if (flags & THREADPOOL_IMMEDIATE) {
+            //     free(task);
+            // }
             
             task = next;
         }
