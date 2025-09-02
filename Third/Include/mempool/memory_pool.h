@@ -5,9 +5,24 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <pthread.h>
-
-#ifdef __cplusplus
-extern "C" {
+// 调试开关：编译时传入 -DMEMPOOL_DEBUG=1 启用
+#if defined(MEMPOOL_DEBUG) && (MEMPOOL_DEBUG)
+    #include <stdio.h>
+    #include <stdlib.h>
+    #define MP_DEBUG 1
+    #define MP_LOG(fmt, ...) do { \
+            fprintf(stderr, "[mempool] %s:%d: " fmt "\n", __FILE__, __LINE__, ##__VA_ARGS__); \
+        } while (0)
+    #define MP_ASSERT(cond, msg) do { \
+            if (!(cond)) { \
+                fprintf(stderr, "[mempool][ASSERT] %s:%d: %s\n", __FILE__, __LINE__, (msg)); \
+                abort(); \
+            } \
+        } while (0)
+#else
+    #define MP_DEBUG 0
+    #define MP_LOG(...) do { } while (0)
+    #define MP_ASSERT(cond, msg) do { } while (0)
 #endif
 
 #ifndef false
@@ -16,6 +31,10 @@ extern "C" {
 
 #ifndef true
 #define true 1
+#endif
+
+#ifdef __cplusplus
+extern "C" {
 #endif
 
 // 魔数定义
@@ -53,6 +72,7 @@ typedef struct memory_pool {
     pthread_mutex_t mutex;         // 互斥锁
     bool thread_safe;              // 是否线程安全
     uint32_t alignment;            // 内存对齐字节数
+    struct memory_pool* next;      // 下一个内存池（链式扩展）
     
     // 固定大小池
     size_class_pool_t size_classes[MAX_SIZE_CLASSES];
