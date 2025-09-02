@@ -1,6 +1,10 @@
 {
     "files.associations": {
         "*.c": "c",
-        "queue": "cpp"
-    }
+        "queue": "cpp",
+        "stdlib.h": "c",
+        "stdbool.h": "c",
+        "ring_queue.h": "c"
+    },
+    "C_Cpp.default.compilerPath": "/usr/bin/gcc"
 }

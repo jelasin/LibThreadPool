@@ -4,6 +4,14 @@
 #include <pthread.h>
 #include <stdbool.h>
 
+#ifndef false
+#define false 0
+#endif
+
+#ifndef true
+#define true 1
+#endif
+
 /* 线程池错误码 */
 typedef enum {
     THREADPOOL_SUCCESS = 0,      // 成功
