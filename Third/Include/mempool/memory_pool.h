@@ -6,12 +6,8 @@
 #include <stddef.h>
 #include <pthread.h>
 
-#ifndef false
-#define false 0
-#endif
-
-#ifndef true
-#define true 1
+#ifdef __cplusplus
+extern "C" {
 #endif
 
 // 魔数定义
@@ -50,29 +46,11 @@ typedef struct memory_pool {
     bool thread_safe;              // 是否线程安全
     uint32_t alignment;            // 内存对齐字节数
     
-    // 性能统计
-    uint64_t alloc_count;          // 分配次数
-    uint64_t free_count;           // 释放次数
-    uint64_t merge_count;          // 合并次数
-    
     // 固定大小池
     size_class_pool_t size_classes[MAX_SIZE_CLASSES];
     size_t class_sizes[MAX_SIZE_CLASSES];
     int num_classes;
 } memory_pool_t;
-
-// 内存池统计信息
-typedef struct pool_stats {
-    size_t total_size;             // 总大小
-    size_t used_size;              // 已使用大小
-    size_t free_size;              // 空闲大小
-    size_t largest_free_block;     // 最大空闲块
-    size_t fragmentation_ratio;    // 碎片率(百分比)
-    uint64_t allocation_count;     // 分配次数
-    uint64_t free_count;           // 释放次数
-    uint64_t merge_count;          // 合并次数
-    size_t free_block_count;       // 空闲块数量
-} pool_stats_t;
 
 // 内存池配置
 typedef struct pool_config {
@@ -105,9 +83,7 @@ size_t memory_pool_get_block_size(memory_pool_t* pool, void* ptr);
 void memory_pool_warmup(memory_pool_t* pool);
 void memory_pool_defragment(memory_pool_t* pool);
 
-// 统计和调试
-void memory_pool_get_stats(memory_pool_t* pool, pool_stats_t* stats);
-void memory_pool_print_stats(memory_pool_t* pool);
+// 调试
 bool memory_pool_validate(memory_pool_t* pool);
 
 // 固定大小池操作
@@ -129,5 +105,9 @@ typedef enum {
 // 获取最后错误
 pool_error_t memory_pool_get_last_error(void);
 const char* memory_pool_error_string(pool_error_t error);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // MEMORY_POOL_H

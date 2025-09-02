@@ -105,9 +105,6 @@ memory_pool_t* memory_pool_create_with_config(const pool_config_t* config) {
     pool->used_size = 0;
     pool->alignment = config->alignment;
     pool->thread_safe = config->thread_safe;
-    pool->alloc_count = 0;
-    pool->free_count = 0;
-    pool->merge_count = 0;
     pool->num_classes = 0;
 
     // 初始化互斥锁
@@ -250,7 +247,6 @@ void* memory_pool_alloc(memory_pool_t* pool, size_t size) {
     }
 
     pool->used_size += block->size;
-    pool->alloc_count++;
 
     if (pool->thread_safe) {
         pthread_mutex_unlock(&pool->mutex);
@@ -355,7 +351,6 @@ void memory_pool_free(memory_pool_t* pool, void* ptr) {
     }
 
     pool->used_size -= block->size;
-    pool->free_count++;
 
     // 清除next指针，确保块状态正确
     block->next = NULL;
@@ -425,11 +420,8 @@ void memory_pool_reset(memory_pool_t* pool) {
         pthread_mutex_lock(&pool->mutex);
     }
 
-    // 重置统计信息
+    // 重置使用信息
     pool->used_size = 0;
-    pool->alloc_count = 0;
-    pool->free_count = 0;
-    pool->merge_count = 0;
 
     // 重置空闲链表
     memory_block_t* initial_block = (memory_block_t*)pool->pool_start;
@@ -503,7 +495,6 @@ void memory_pool_defragment(memory_pool_t* pool) {
 static void merge_free_blocks(memory_pool_t* pool) {
     if (!pool->free_list) return;
 
-    int merge_attempts = 0;
     bool merged;
     do {
         merged = false;
@@ -518,78 +509,13 @@ static void merge_free_blocks(memory_pool_t* pool) {
                 memory_block_t* next_block = current->next;
                 current->size += next_block->size;
                 current->next = next_block->next;
-                pool->merge_count++;
                 merged = true;
-                merge_attempts++;
                 // 继续检查当前块是否能与下一个块合并
             } else {
                 current = current->next;
             }
         }
     } while (merged);  // 重复合并直到没有可合并的块
-}
-
-// 获取统计信息
-void memory_pool_get_stats(memory_pool_t* pool, pool_stats_t* stats) {
-    if (!pool || !stats) return;
-
-    if (pool->thread_safe) {
-        pthread_mutex_lock(&pool->mutex);
-    }
-
-    stats->total_size = pool->pool_size;
-    stats->used_size = pool->used_size;
-    stats->free_size = pool->pool_size - pool->used_size;
-    stats->allocation_count = pool->alloc_count;
-    stats->free_count = pool->free_count;
-    stats->merge_count = pool->merge_count;
-
-    // 计算最大空闲块和块数量
-    stats->largest_free_block = 0;
-    stats->free_block_count = 0;
-    
-    memory_block_t* current = pool->free_list;
-    while (current) {
-        stats->free_block_count++;
-        if (current->size > stats->largest_free_block) {
-            stats->largest_free_block = current->size;
-        }
-        current = current->next;
-    }
-
-    // 计算碎片率
-    if (stats->free_size > 0) {
-        size_t avg_block_size = stats->free_size / (stats->free_block_count + 1);
-        stats->fragmentation_ratio = (stats->free_block_count * 100) / (avg_block_size / 64 + 1);
-    } else {
-        stats->fragmentation_ratio = 0;
-    }
-
-    if (pool->thread_safe) {
-        pthread_mutex_unlock(&pool->mutex);
-    }
-}
-
-// 打印统计信息
-void memory_pool_print_stats(memory_pool_t* pool) {
-    if (!pool) return;
-
-    pool_stats_t stats;
-    memory_pool_get_stats(pool, &stats);
-
-    printf("=== Memory Pool Statistics ===\n");
-    printf("Total Size:          %zu bytes\n", stats.total_size);
-    printf("Used Size:           %zu bytes (%.1f%%)\n", 
-           stats.used_size, (double)stats.used_size * 100.0 / stats.total_size);
-    printf("Free Size:           %zu bytes (%.1f%%)\n", 
-           stats.free_size, (double)stats.free_size * 100.0 / stats.total_size);
-    printf("Largest Free Block:  %zu bytes\n", stats.largest_free_block);
-    printf("Free Block Count:    %zu\n", stats.free_block_count);
-    printf("Fragmentation Ratio: %zu%%\n", stats.fragmentation_ratio);
-    printf("Allocations:         %lu\n", stats.allocation_count);
-    printf("Frees:               %lu\n", stats.free_count);
-    printf("Merges:              %lu\n", stats.merge_count);
-    printf("================================\n");
 }
 
 // 验证内存池完整性
