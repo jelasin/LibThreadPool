@@ -10,6 +10,14 @@
 extern "C" {
 #endif
 
+#ifndef false
+#define false 0
+#endif
+
+#ifndef true
+#define true 1
+#endif
+
 // 魔数定义
 #define MAGIC_NUMBER 0xDEADBEEF
 // 内存对齐优化
