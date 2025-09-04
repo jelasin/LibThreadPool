@@ -4,11 +4,16 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#ifdef DEBUG
+#include <stdio.h>
+#endif
 
 /* 任务结构体 */
 typedef struct threadpool_task {
     threadpool_task_func function; // 任务函数
     void *argument;                // 函数参数
+    // 标记分配来源：1=fixed(size class), 2=pool(general), 3=malloc
+    unsigned char alloc_type;
 } threadpool_task_t;
 
 /* 线程池结构体定义 */
@@ -28,6 +33,17 @@ struct threadpool_t {
 
     // 任务节点内存池
     memory_pool_t *task_pool;
+
+#ifdef DEBUG
+    // 调试统计
+    size_t dbg_alloc_fixed;
+    size_t dbg_alloc_pool;
+    size_t dbg_alloc_malloc;
+    size_t dbg_free_pool_fixed;
+    size_t dbg_free_malloc;
+    size_t dbg_destroy_free_pool_fixed;
+    size_t dbg_destroy_free_malloc;
+#endif
 };
 
 /**
@@ -76,9 +92,31 @@ static void *threadpool_worker(void *arg)
                 (*(task->function))(task->argument);
                 // 任务完成后释放内存
                 if (pool->task_pool) {
-                    memory_pool_free(pool->task_pool, task);
+                    switch (task->alloc_type) {
+                        case 1: // fixed size class
+                            memory_pool_free_fixed(pool->task_pool, task);
+#ifdef DEBUG
+                            pool->dbg_free_pool_fixed++;
+#endif
+                            break;
+                        case 2: // general pool
+                            memory_pool_free(pool->task_pool, task);
+#ifdef DEBUG
+                            pool->dbg_free_pool_fixed++; // 统计为来自内存池的释放
+#endif
+                            break;
+                        default: // 3 or others -> malloc
+                            free(task);
+#ifdef DEBUG
+                            pool->dbg_free_malloc++;
+#endif
+                            break;
+                    }
                 } else {
                     free(task);
+#ifdef DEBUG
+                    pool->dbg_free_malloc++;
+#endif
                 }
             }
 
@@ -127,6 +165,15 @@ threadpool_t *threadpool_create(int thread_count, int queue_size)
     pool->active = 0;
     pool->started = 0;
     pool->task_pool = NULL;
+#ifdef DEBUG
+    pool->dbg_alloc_fixed = 0;
+    pool->dbg_alloc_pool = 0;
+    pool->dbg_alloc_malloc = 0;
+    pool->dbg_free_pool_fixed = 0;
+    pool->dbg_free_malloc = 0;
+    pool->dbg_destroy_free_pool_fixed = 0;
+    pool->dbg_destroy_free_malloc = 0;
+#endif
 
     // 分配线程数组内存
     pool->threads = (pthread_t *)malloc(sizeof(pthread_t) * thread_count);
@@ -148,11 +195,26 @@ threadpool_t *threadpool_create(int thread_count, int queue_size)
         goto err;
     }
 
-    // 创建任务内存池（尽量缓存任务对象）
-    size_t task_node_size = sizeof(threadpool_task_t) + 64; // 预留对齐和头信息
-    size_t task_pool_bytes = initial_capacity * task_node_size;
-    pool->task_pool = memory_pool_create(task_pool_bytes, true);
-    // 如果创建失败，回退到malloc/free
+    // 创建任务内存池（固定大小类别：threadpool_task_t）
+    {
+        size_t class_size = sizeof(threadpool_task_t);
+        size_t task_pool_bytes = initial_capacity * (class_size + 128); // 预留头部/对齐冗余
+        size_t class_sizes_arr[1] = { class_size };
+        pool_config_t cfg = {
+            .pool_size = task_pool_bytes,
+            .thread_safe = true,
+            .alignment = DEFAULT_ALIGNMENT,
+            .enable_size_classes = true,
+            .size_class_sizes = class_sizes_arr,
+            .num_size_classes = 1
+        };
+        pool->task_pool = memory_pool_create_with_config(&cfg);
+        if (pool->task_pool) {
+            // 预热固定大小块
+            memory_pool_add_size_class(pool->task_pool, class_size, initial_capacity);
+        }
+        // 如果创建失败，稍后回退到malloc/free
+    }
 
     // 创建工作线程
     for (i = 0; i < thread_count; i++) {
@@ -206,6 +268,7 @@ err:
 int threadpool_add(threadpool_t *pool, threadpool_task_func function, void *argument) 
 {
     threadpool_task_t *task;
+    unsigned char alloc_type = 0;
 
     // 参数检查
     if (pool == NULL || function == NULL) {
@@ -231,13 +294,38 @@ int threadpool_add(threadpool_t *pool, threadpool_task_func function, void *argu
 
     // 创建任务结构体
     if (pool->task_pool) {
-        task = (threadpool_task_t *)memory_pool_alloc(pool->task_pool, sizeof(threadpool_task_t));
-        if (!task) {
-            // 内存池不足时回退到malloc
-            task = (threadpool_task_t *)malloc(sizeof(threadpool_task_t));
+        task = (threadpool_task_t *)memory_pool_alloc_fixed(pool->task_pool, sizeof(threadpool_task_t));
+        if (task) {
+            alloc_type = 1;
+#ifdef DEBUG
+            pool->dbg_alloc_fixed++;
+#endif
+        } else {
+            // 内存池不足时回退到通用分配，再不行则malloc
+            task = (threadpool_task_t *)memory_pool_alloc(pool->task_pool, sizeof(threadpool_task_t));
+            if (task) {
+                alloc_type = 2;
+#ifdef DEBUG
+                pool->dbg_alloc_pool++;
+#endif
+            } else {
+                task = (threadpool_task_t *)malloc(sizeof(threadpool_task_t));
+                if (task) {
+                    alloc_type = 3;
+#ifdef DEBUG
+                    pool->dbg_alloc_malloc++;
+#endif
+                }
+            }
         }
     } else {
         task = (threadpool_task_t *)malloc(sizeof(threadpool_task_t));
+        if (task) {
+            alloc_type = 3;
+#ifdef DEBUG
+            pool->dbg_alloc_malloc++;
+#endif
+        }
     }
     if (task == NULL) {
         pthread_mutex_unlock(&(pool->lock));
@@ -247,6 +335,7 @@ int threadpool_add(threadpool_t *pool, threadpool_task_func function, void *argu
     // 初始化任务
     task->function = function;
     task->argument = argument;
+    task->alloc_type = alloc_type;
     // 入队，如果容量不足且无限制模式，尝试扩容
     if (ring_queue_is_full(pool->queue)) {
         if (pool->max_queue_size == 0) {
@@ -257,13 +346,65 @@ int threadpool_add(threadpool_t *pool, threadpool_task_func function, void *argu
     }
     if (ring_queue_is_full(pool->queue)) {
         // 仍然满且有限制，报错并回收task
-        if (pool->task_pool) memory_pool_free(pool->task_pool, task); else free(task);
+        if (pool->task_pool) {
+            switch (task->alloc_type) {
+                case 1:
+                    memory_pool_free_fixed(pool->task_pool, task);
+#ifdef DEBUG
+                    pool->dbg_free_pool_fixed++;
+#endif
+                    break;
+                case 2:
+                    memory_pool_free(pool->task_pool, task);
+#ifdef DEBUG
+                    pool->dbg_free_pool_fixed++;
+#endif
+                    break;
+                default:
+                    free(task);
+#ifdef DEBUG
+                    pool->dbg_free_malloc++;
+#endif
+                    break;
+            }
+        } else {
+            free(task);
+#ifdef DEBUG
+            pool->dbg_free_malloc++;
+#endif
+        }
         pthread_mutex_unlock(&(pool->lock));
         return THREADPOOL_QUEUE_FULL;
     }
     if (ring_queue_enqueue(pool->queue, task) != RING_QUEUE_SUCCESS) {
         // 极端情况下的失败
-        if (pool->task_pool) memory_pool_free(pool->task_pool, task); else free(task);
+        if (pool->task_pool) {
+            switch (task->alloc_type) {
+                case 1:
+                    memory_pool_free_fixed(pool->task_pool, task);
+#ifdef DEBUG
+                    pool->dbg_free_pool_fixed++;
+#endif
+                    break;
+                case 2:
+                    memory_pool_free(pool->task_pool, task);
+#ifdef DEBUG
+                    pool->dbg_free_pool_fixed++;
+#endif
+                    break;
+                default:
+                    free(task);
+#ifdef DEBUG
+                    pool->dbg_free_malloc++;
+#endif
+                    break;
+            }
+        } else {
+            free(task);
+#ifdef DEBUG
+            pool->dbg_free_malloc++;
+#endif
+        }
         pthread_mutex_unlock(&(pool->lock));
         return THREADPOOL_QUEUE_FULL;
     }
@@ -343,7 +484,34 @@ int threadpool_destroy(threadpool_t *pool, int flags)
                     // 出队
                     ring_queue_dequeue(pool->queue);
                     // 释放任务
-                    if (pool->task_pool) memory_pool_free(pool->task_pool, elem); else free(elem);
+                    threadpool_task_t *t = (threadpool_task_t *)elem;
+                    if (pool->task_pool) {
+                        switch (t->alloc_type) {
+                            case 1:
+                                memory_pool_free_fixed(pool->task_pool, t);
+#ifdef DEBUG
+                                pool->dbg_destroy_free_pool_fixed++;
+#endif
+                                break;
+                            case 2:
+                                memory_pool_free(pool->task_pool, t);
+#ifdef DEBUG
+                                pool->dbg_destroy_free_pool_fixed++;
+#endif
+                                break;
+                            default:
+                                free(t);
+#ifdef DEBUG
+                                pool->dbg_destroy_free_malloc++;
+#endif
+                                break;
+                        }
+                    } else {
+                        free(t);
+#ifdef DEBUG
+                        pool->dbg_destroy_free_malloc++;
+#endif
+                    }
                 } else {
                     break;
                 }
@@ -361,6 +529,16 @@ int threadpool_destroy(threadpool_t *pool, int flags)
         pthread_cond_destroy(&(pool->empty)) != 0) {
         err = THREADPOOL_LOCK_FAILURE;
     }
+
+    // DEBUG: 打印统计信息
+#ifdef DEBUG
+    fprintf(stderr, "[threadpool][DEBUG] alloc_fixed=%zu alloc_pool=%zu alloc_malloc=%zu\n",
+        pool->dbg_alloc_fixed, pool->dbg_alloc_pool, pool->dbg_alloc_malloc);
+    fprintf(stderr, "[threadpool][DEBUG] free_pool_or_fixed=%zu free_malloc=%zu\n",
+        pool->dbg_free_pool_fixed, pool->dbg_free_malloc);
+    fprintf(stderr, "[threadpool][DEBUG] destroy_free_pool_or_fixed=%zu destroy_free_malloc=%zu\n",
+        pool->dbg_destroy_free_pool_fixed, pool->dbg_destroy_free_malloc);
+#endif
 
     // 释放内存
     if (pool->threads) {

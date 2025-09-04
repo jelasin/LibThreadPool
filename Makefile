@@ -79,22 +79,4 @@ shared: prepare
         $(BUILD_DIR)/ring_queue.pic.o \
         $(BUILD_DIR)/memory_pool.pic.o
 
-# 安装规则
-install: static shared
-	@echo "安装库文件到系统..."
-	@sudo cp $(BIN_DIR)/libthreadpool.a /usr/local/lib/
-	@sudo cp $(BIN_DIR)/libthreadpool.so /usr/local/lib/
-	@sudo cp $(INCLUDE_DIR)/Threadpool.h /usr/local/include/
-	@sudo ldconfig
-	@echo "库安装完成"
-
-# 卸载规则
-uninstall:
-	@echo "从系统中移除库文件..."
-	@sudo rm -f /usr/local/lib/libthreadpool.a
-	@sudo rm -f /usr/local/lib/libthreadpool.so
-	@sudo rm -f /usr/local/include/Threadpool.h
-	@sudo ldconfig
-	@echo "库卸载完成"
-
-.PHONY: all prepare clean debug run static shared install uninstall
+.PHONY: all prepare clean debug run static shared

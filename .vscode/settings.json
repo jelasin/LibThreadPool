@@ -5,7 +5,9 @@
         "stdlib.h": "c",
         "stdbool.h": "c",
         "ring_queue.h": "c",
-        "memory_pool.h": "c"
+        "memory_pool.h": "c",
+        "string.h": "c",
+        "stdint.h": "c"
     },
     "C_Cpp.default.compilerPath": "/usr/bin/gcc"
 }

@@ -1,158 +1,136 @@
 # LibThreadPool - C语言线程池库
 
-一个轻量级、高效、线程安全的C语言线程池实现，适用于需要处理大量并发任务的应用程序。
+一个轻量级、高性能、线程安全的 C 线程池实现。当前已集成环形队列和内存池，以降低分配开销并提升吞吐。
 
-## 功能特点
+## 特性
 
-- **高性能**：高效的任务调度和线程管理
-- **线程安全**：使用互斥锁和条件变量确保线程安全
-- **灵活配置**：可自定义线程数量和任务队列大小
-- **两种销毁模式**：支持优雅退出和即时退出
-- **简单API**：易于集成到现有项目中
-- **纯C实现**：无外部依赖，跨平台兼容
+- 高性能调度：环形队列（Third/ring_queue）作为任务队列，入队/出队常数时间
+- 低分配开销：内存池（Third/mempool）用于任务节点分配，失败时自动回退 malloc
+- 线程安全：互斥锁 + 条件变量（支持“队列清空且无活跃任务”的等待）
+- 灵活容量：queue_size=0 表示无限队列（自动扩容）；>0 表示有界队列
+- 两种销毁模式：优雅（等待完成）/ 立即（取消队列中未执行任务）
+- 简单 API：仅 3 个接口，易于集成
 
 ## 目录结构
 
 ```text
 LibThreadPool/
 ├── Include/
-│   └── Threadpool.h   # 线程池头文件
+│   └── Threadpool.h           # 线程池头文件
 ├── Src/
-│   ├── Threadpool.c   # 线程池实现
-│   └── main.c         # 示例程序
-└── README.md          # 本文档
+│   └── Threadpool.c           # 线程池实现
+├── Third/                     # 第三方工具库（本仓库内）
+│   ├── Include/
+│   │   ├── mempool/memory_pool.h
+│   │   └── ring_queue/ring_queue.h
+│   └── Src/
+│       ├── mempool/memory_pool.c
+│       └── ring_queue/ring_queue.c
+├── example/
+│   └── example.c              # 示例程序
+├── Makefile
+├── Bin/                       # 产物（可执行/库）
+└── Build/                     # 中间文件
 ```
 
-## 编译和安装
+## 构建与运行
 
-### 前提条件
+前提：GCC、POSIX 线程库（pthread）。
 
-- GCC编译器
-- POSIX线程库(pthread)
-
-### 编译
+使用 Makefile：
 
 ```bash
-# 进入项目目录
-cd LibThreadPool
+# 构建可执行示例（Bin/threadpool_demo）
+make -j"$(nproc)" all
 
-# 编译库和示例程序
-gcc -o threadpool_demo Src/Threadpool.c Src/main.c -I./Include -lpthread
+# 运行示例
+./Bin/threadpool_demo
 
-# 运行示例程序
-./threadpool_demo
+# 仅清理
+make clean
+
+# 生成静态库和共享库（包含 ring_queue & mempool 实现）
+make -j"$(nproc)" static shared
 ```
 
-## API文档
+将库集成到你的项目：
 
-### 创建线程池
+```bash
+gcc your_app.c -I./Include -I./Third/Include -L./Bin -lthreadpool -lpthread -o your_app
+```
+
+## API
+
+头文件：`Include/Threadpool.h`
 
 ```c
+typedef void (*threadpool_task_func)(void *arg);
+
 threadpool_t *threadpool_create(int thread_count, int queue_size);
-```
-
-**参数**:
-
-- `thread_count`: 工作线程数量 (如果小于等于0，则使用默认值4)
-- `queue_size`: 任务队列最大容量 (0表示无限)
-
-**返回值**:
-
-- 成功: 返回线程池指针
-- 失败: 返回NULL
-
-### 添加任务
-
-```c
 int threadpool_add(threadpool_t *pool, threadpool_task_func function, void *argument);
-```
-
-**参数**:
-
-- `pool`: 线程池指针
-- `function`: 任务函数指针
-- `argument`: 任务函数参数
-
-**返回值**:
-
-- `THREADPOOL_SUCCESS` (0): 成功
-- 其他错误码: 添加失败
-
-### 销毁线程池
-
-```c
 int threadpool_destroy(threadpool_t *pool, int flags);
+
+#define THREADPOOL_GRACEFUL  1  // 等待所有任务完成
+#define THREADPOOL_IMMEDIATE 2  // 立即关闭，取消未执行任务
 ```
 
-**参数**:
+说明：
 
-- `pool`: 线程池指针
-- `flags`: 销毁模式
-  - `THREADPOOL_GRACEFUL`: 等待所有任务完成后销毁
-  - `THREADPOOL_IMMEDIATE`: 立即销毁，取消队列中的任务,可能存在条件竞争导致内存泄漏的风险,现已关闭该功能.
+- thread_count <= 0 将使用默认线程数（实现目前默认 4）。
+- queue_size=0 表示无限队列：队列容量按需自动扩容；>0 表示固定上限。
+- threadpool_add 为非阻塞：当队列为有界且已满时返回 `THREADPOOL_QUEUE_FULL`。
+- destroy(THREADPOOL_GRACEFUL)：等待队列清空且无活跃任务后回收资源。
+- destroy(THREADPOOL_IMMEDIATE)：唤醒线程并尽快退出，队列中未执行的任务会被取消（仅释放任务节点结构）。
 
-**返回值**:
+返回码：
 
-- `THREADPOOL_SUCCESS` (0): 成功
-- 其他错误码: 销毁失败
+- `THREADPOOL_SUCCESS` (0)
+- `THREADPOOL_INVALID` (-1)
+- `THREADPOOL_LOCK_FAILURE` (-2)
+- `THREADPOOL_QUEUE_FULL` (-3)
+- `THREADPOOL_SHUTDOWN` (-4)
+- `THREADPOOL_THREAD_FAILURE` (-5)
+- `THREADPOOL_MEMORY_ERROR` (-6)
 
-## 使用示例
+## 示例
+
+示例代码位于 `example/example.c`，可通过 `make run`（等价于 `make all && ./Bin/threadpool_demo`）运行。核心用法：
 
 ```c
-#include <stdio.h>
-#include <stdlib.h>
-#include "Threadpool.h"
+// 创建线程池（8个工作线程，队列上限100；若传0则为无限队列）
+threadpool_t *pool = threadpool_create(8, 100);
 
-// 任务函数
-void example_task(void *arg) {
-    int task_id = *(int*)arg;
-    printf("任务 %d 正在执行\n", task_id);
-    free(arg); // 释放参数内存
-}
+// 添加任务（参数建议由调用方管理其生命周期）
+int *arg = malloc(sizeof(int));
+*arg = 42;
+threadpool_add(pool, task_fn, arg);
 
-int main() {
-    // 创建8线程的线程池，队列容量为100
-    threadpool_t *pool = threadpool_create(8, 100);
-    if (pool == NULL) {
-        fprintf(stderr, "线程池创建失败\n");
-        return 1;
-    }
-    
-    // 添加10个任务到线程池
-    int i;
-    for (i = 0; i < 10; i++) {
-        int *task_id = (int*)malloc(sizeof(int));
-        if (task_id == NULL) continue;
-        
-        *task_id = i;
-        threadpool_add(pool, example_task, task_id);
-    }
-    
-    // 优雅地销毁线程池 (等待所有任务完成)
-    threadpool_destroy(pool, THREADPOOL_GRACEFUL);
-    
-    return 0;
-}
+// 关闭线程池
+threadpool_destroy(pool, THREADPOOL_GRACEFUL);
 ```
 
-## 错误处理
+## 实现细节（性能）
 
-线程池库定义了以下错误码:
-
-- `THREADPOOL_SUCCESS` (0): 成功
-- `THREADPOOL_INVALID` (-1): 无效参数
-- `THREADPOOL_LOCK_FAILURE` (-2): 锁操作失败
-- `THREADPOOL_QUEUE_FULL` (-3): 任务队列已满
-- `THREADPOOL_SHUTDOWN` (-4): 线程池已关闭
-- `THREADPOOL_THREAD_FAILURE` (-5): 线程创建失败
-- `THREADPOOL_MEMORY_ERROR` (-6): 内存分配失败
+- 任务队列：环形队列（Third/ring_queue），入队/出队 O(1)。无限队列通过按倍数扩容实现。
+- 任务对象：使用内存池（Third/mempool）分配 `threadpool_task_t`；若内存池不足会回退到 `malloc`。
+- 同步语义：使用 `notify` 与 `empty` 两个条件变量，确保优雅关闭时不会竞态退出。
 
 ## 注意事项
 
-1. 任务参数需要由调用者动态分配内存，并在任务函数中释放
-2. 优雅退出模式会等待所有已提交任务完成
-3. 任务函数应避免长时间阻塞，以免影响线程池性能
+1. 任务函数参数（argument）的生命周期由调用方负责。当前立即关闭模式仅释放任务节点本身，不会自动释放 argument 指向的资源；如需在任务未执行时也清理参数，请在更高层统一管理或避免在 argument 中直接持有堆内存所有权。
+2. 任务函数应避免长时间阻塞，或自行做超时/取消控制，以获得更好吞吐与收敛时间。
+3. 在有界队列下，队满会返回 `THREADPOOL_QUEUE_FULL`；如需阻塞提交/超时提交，可扩展接口（当前实现不阻塞）。
+
+## 调试（DEBUG 统计）
+
+编译为调试模式（`make debug` 或自行添加 `-DDEBUG -g`），在线程池销毁时会输出内存池使用统计，便于确认是否走了内存池路径：
+
+- alloc_fixed / alloc_pool / alloc_malloc：任务节点分配来源（固定大小类别 / 通用池 / 系统 malloc）
+- free_pool_or_fixed / free_malloc：任务执行完成后的释放统计
+- destroy_free_pool_or_fixed / destroy_free_malloc：销毁阶段（未执行任务）释放统计
+
+正常情况下应主要为 alloc_fixed 与对应的 pool 释放计数，malloc 计数接近 0（除非内存池耗尽或未启用）。
 
 ## 许可证
 
-本项目采用 MIT 许可证
+MIT

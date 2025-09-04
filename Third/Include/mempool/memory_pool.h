@@ -25,11 +25,11 @@
     #define MP_ASSERT(cond, msg) do { } while (0)
 #endif
 
-#ifndef false
+#ifndef false 
 #define false 0
 #endif
 
-#ifndef true
+#ifndef true 
 #define true 1
 #endif
 
@@ -47,15 +47,29 @@ extern "C" {
 #define MAX_SIZE_CLASSES 16    // 支持的固定大小数量
 #define PAGE_SIZE 4096
 
-// 内存块头部结构
+// 标志位
+#define MB_FLAG_PREV_FREE  0x1    // 前一个物理块是空闲块（通用块）
+#define MB_FLAG_FREE       0x2    // 当前块处于通用空闲列表
+#define MB_FLAG_SIZECLASS  0x4    // 属于固定大小类别管理（不参与通用合并）
+
+// 内存块头部结构（紧凑 + 复用）：
+// 空闲块: union.next 用作空闲链指针；已分配块: union.prev_size 记录前一物理块大小(用于 O(1) 反向合并)
 typedef struct memory_block {
-    struct memory_block* next;     // 指向下一个空闲块
-    size_t size;                   // 块大小（包含头部）
-    uint32_t magic;                // 魔数，用于检测内存损坏
-    uint32_t padding;              // 填充字节，保证对齐
+    union {
+        struct memory_block* next; // 空闲链表指针（仅当 MB_FLAG_FREE=1 时有效）
+        uint32_t prev_size;        // 前一个物理块大小（仅当 MB_FLAG_FREE=0 且 MB_FLAG_PREV_FREE=1 时有效）
+    } u;
+    size_t size;                   // 当前块大小（含头部，已按 alignment 对齐）
+    uint32_t flags;                // 标志位（替换原 padding）
+    uint32_t magic;                // 魔数，用于检测内存损坏（可在 RELEASE 构建裁剪）
+    // 红黑树指针（仅在通用空闲树中使用，减少额外结构体分配）
+    struct memory_block* rb_left;
+    struct memory_block* rb_right;
+    struct memory_block* rb_parent;
+    unsigned char rb_color; // 0=红,1=黑
 } memory_block_t;
 
-// 大小类别池（用于固定大小分配优化）
+// 固定大小类别池（用于固定大小分配优化）
 typedef struct size_class_pool {
     memory_block_t* free_blocks;   // 空闲块链表
     size_t block_size;             // 固定块大小
@@ -73,11 +87,14 @@ typedef struct memory_pool {
     bool thread_safe;              // 是否线程安全
     uint32_t alignment;            // 内存对齐字节数
     struct memory_pool* next;      // 下一个内存池（链式扩展）
+    struct memory_pool* master;    // 主池（全局红黑树所在）
     
     // 固定大小池
-    size_class_pool_t size_classes[MAX_SIZE_CLASSES];
-    size_t class_sizes[MAX_SIZE_CLASSES];
-    int num_classes;
+    size_class_pool_t size_classes[MAX_SIZE_CLASSES]; // bins
+    size_t class_sizes[MAX_SIZE_CLASSES]; // bins size
+    int num_classes; // num of bins
+    // 红黑树根：按 size 排序，支持 O(log n) best-fit
+    memory_block_t* rb_root;       // 仅 master 使用，其他池保持 NULL
 } memory_pool_t;
 
 // 内存池配置
